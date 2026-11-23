@@ -1,16 +1,17 @@
-"""Find the same image stored at different resolutions inside a cluster, and pick the highest-resolution keeper.
+"""Find the same image stored at different resolutions or re-saved at the same size, and pick the best copy to keep.
 
-Theory of purpose: clusters often hold one photo at several sizes. A person should be able to keep the largest
-and discard the rest in one action, without risking crops, bursts or merely similar photos.
-Theory of operation: pairs inside a cluster with CLIP cosine >= MIN_COS and pixel counts differing by at least
-MIN_RATIO are checked. Different frame numbers in one naming scheme, and capture times more than 2 s apart,
+Theory of purpose: clusters often hold one photo at several sizes, or re-encoded at the same size. A person should
+be able to keep the best copy and discard the rest in one action, without risking crops, bursts or merely similar
+photos.
+Theory of operation: pairs inside a cluster with CLIP cosine >= MIN_COS are checked when their pixel counts
+differ by at least MIN_RATIO (a lower-resolution copy) or are equal with different file sizes (a re-save, where
+the larger file, being less compressed, is kept). Different frame numbers in one naming scheme, and capture times more than 2 s apart,
 are rejected. The rest are registered (SIFT, ratio test, RANSAC similarity) on reduced images, and must have at
 least MIN_INLIERS matches, mutual overlap >= MIN_OVERLAP (so a crop never counts) and aligned correlation >=
-MIN_ALIGNED. Files are then visited from largest to smallest: one is lower-res only if it directly matches a
-larger file that is itself a keeper, so chains of matches cannot remove the last copy. Results are cached by path and size.
+MIN_ALIGNED. Files are then visited best first (pixels, then bytes): one is a copy only if it directly matches a
+better file that is itself a keeper, so chains of matches cannot remove the last copy. Results are cached by path and size.
 """
 
-import datetime
 import json
 import os
 import re
@@ -18,15 +19,13 @@ from multiprocessing import Pool
 
 import cv2
 import numpy as np
-from PIL import ExifTags, Image, ImageFile, ImageOps
-from pillow_heif import register_heif_opener
+from PIL import Image, ImageOps
 
-Image.MAX_IMAGE_PIXELS = None
-ImageFile.LOAD_TRUNCATED_IMAGES = True
+from photo_io import capture_time_of, parse_time, register_heif
+
 MIN_COS, MIN_RATIO, MIN_INLIERS, MIN_ALIGNED, MIN_OVERLAP, WORK = 0.97, 1.05, 30, 0.95, 0.85, 1000
 SEQ = re.compile(r"^(.*?[A-Za-z_ -])(\d{3,})\.(jpe?g|png|tiff?|heic)$", re.I)
 FRAME = re.compile(r"^([A-Za-z_]+)(\d{3,})(?!\d)")  # the camera's frame number, whatever follows it
-TAG = {v: k for k, v in ExifTags.TAGS.items()}
 
 
 def different_frames(a, b):
@@ -46,14 +45,7 @@ def different_frames(a, b):
 
 def is_burst(a, b):
     """True when both files record capture times that differ by more than 2 s, apart from whole-hour time zone shifts."""
-    def stamp(p):
-        v = Image.open(p).getexif().get_ifd(0x8769).get(TAG["DateTimeOriginal"])
-        return datetime.datetime.strptime(str(v).strip()[:19], "%Y:%m:%d %H:%M:%S") if v else None
-    try:
-        register_heif_opener()
-        x, y = stamp(a), stamp(b)
-    except (OSError, ValueError):
-        return False
+    x, y = parse_time(capture_time_of(a)), parse_time(capture_time_of(b))
     if not (x and y):
         return False
     d = abs((x - y).total_seconds())
@@ -61,7 +53,7 @@ def is_burst(a, b):
 
 
 def _gray(path):
-    register_heif_opener()
+    register_heif()
     img = ImageOps.exif_transpose(Image.open(path)).convert("L")
     img.thumbnail((WORK, WORK))
     return np.asarray(img)
@@ -100,29 +92,43 @@ def same_image(pair):
         return pair, False
 
 
-def choose_lower_res(n_pixels, matches):
-    """Map each lower-res node to its keeper; matches is a set of frozenset({i, j}) verified pairs."""
-    lower = {}
-    for x in sorted(n_pixels, key=lambda i: -n_pixels[i]):
-        bigger = [y for y in n_pixels if y != x and frozenset((x, y)) in matches
-                  and n_pixels[y] >= MIN_RATIO * n_pixels[x] and y not in lower]
-        if bigger:
-            lower[x] = max(bigger, key=lambda y: n_pixels[y])
-    return lower
+def better(y, x, n_pixels, n_bytes):
+    """True when y is a better copy than x: clearly more pixels, or the same pixels in a larger (less compressed) file."""
+    return n_pixels[y] >= MIN_RATIO * n_pixels[x] or (n_pixels[y] == n_pixels[x] and n_bytes[y] > n_bytes[x])
 
 
-def find_lower_res(clusters, paths, E, pixels, cache_path, workers=12):
+def choose_copies(n_pixels, matches, n_bytes=None):
+    """Map each copy to its keeper; matches is a set of frozenset({i, j}) verified pairs.
+
+    Without n_bytes only lower-resolution copies are found; with it, same-size re-saves are too.
+    """
+    n_bytes = n_bytes or {i: 0 for i in n_pixels}
+    copies = {}
+    for x in sorted(n_pixels, key=lambda i: (-n_pixels[i], -n_bytes[i], i)):
+        keepers = [y for y in n_pixels if y != x and frozenset((x, y)) in matches
+                   and better(y, x, n_pixels, n_bytes) and y not in copies]
+        if keepers:
+            copies[x] = max(keepers, key=lambda y: (n_pixels[y], n_bytes[y]))
+    return copies
+
+
+def candidate(a, b, pixels, nbytes):
+    """A pair worth registering: different resolutions, or the same resolution in files of different size."""
+    hi, lo = max(pixels[a], pixels[b]), min(pixels[a], pixels[b])
+    return bool(lo) and (hi >= MIN_RATIO * lo or (hi == lo and nbytes[a] != nbytes[b]))
+
+
+def find_copies(clusters, paths, E, pixels, nbytes, cache_path, workers=12):
     """Return {index: keeper index} over the given clusters of indices into paths."""
     cache = json.load(open(cache_path)) if os.path.exists(cache_path) else {}
-    key = lambda a, b: "\t".join(f"{paths[i]}|{os.path.getsize(paths[i])}" for i in sorted((a, b)))
+    key = lambda a, b: "\t".join(f"{paths[i]}|{nbytes[i]}" for i in sorted((a, b)))
     todo, pairs = [], []
     for c in clusters:
         idx = np.array(c)
         S = E[idx] @ E[idx].T
         for i, j in zip(*np.nonzero(np.triu(S >= MIN_COS, 1))):
             a, b = int(idx[i]), int(idx[j])
-            hi, lo = max(pixels[a], pixels[b]), min(pixels[a], pixels[b])
-            if lo and hi >= MIN_RATIO * lo:
+            if candidate(a, b, pixels, nbytes):
                 pairs.append((a, b))
                 if key(a, b) not in cache:
                     todo.append((a, b))
@@ -134,7 +140,7 @@ def find_lower_res(clusters, paths, E, pixels, cache_path, workers=12):
         os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
         json.dump(cache, open(cache_path, "w"))
     matches = {frozenset(p) for p in pairs if cache[key(*p)]}
-    lower = {}
+    copies = {}
     for c in clusters:
-        lower.update(choose_lower_res({i: pixels[i] for i in c}, matches))
-    return lower
+        copies.update(choose_copies({i: pixels[i] for i in c}, matches, {i: nbytes[i] for i in c}))
+    return copies

@@ -63,14 +63,31 @@ class Rules(unittest.TestCase):
             self.assertEqual(rd.different_frames(a, b), want, (a, b))
 
     def test_largest_is_keeper(self):
-        self.assertEqual(rd.choose_lower_res({0: 400, 1: 100, 2: 25}, {frozenset((0, 1)), frozenset((0, 2))}), {1: 0, 2: 0})
+        self.assertEqual(rd.choose_copies({0: 400, 1: 100, 2: 25}, {frozenset((0, 1)), frozenset((0, 2))}), {1: 0, 2: 0})
 
     def test_chain_needs_a_direct_match_to_a_keeper(self):
         # 2 matches only 1, and 1 is itself a lower-res copy of 0, so 2 must stay
-        self.assertEqual(rd.choose_lower_res({0: 400, 1: 100, 2: 25}, {frozenset((0, 1)), frozenset((1, 2))}), {1: 0})
+        self.assertEqual(rd.choose_copies({0: 400, 1: 100, 2: 25}, {frozenset((0, 1)), frozenset((1, 2))}), {1: 0})
 
-    def test_equal_sizes_are_left_alone(self):
-        self.assertEqual(rd.choose_lower_res({0: 100, 1: 100}, {frozenset((0, 1))}), {})
+    def test_equal_sizes_are_left_alone_without_file_sizes(self):
+        self.assertEqual(rd.choose_copies({0: 100, 1: 100}, {frozenset((0, 1))}), {})
+
+    def test_same_size_resave_keeps_larger_file(self):
+        self.assertEqual(rd.choose_copies({0: 100, 1: 100}, {frozenset((0, 1))}, {0: 500, 1: 900}), {0: 1})
+
+    def test_identical_size_and_bytes_are_left_alone(self):
+        self.assertEqual(rd.choose_copies({0: 100, 1: 100}, {frozenset((0, 1))}, {0: 500, 1: 500}), {})
+
+    def test_resave_and_lower_res_share_one_keeper(self):
+        # 0 is the best file; 1 is a smaller re-save of it; 2 is half size and matches both
+        pairs = {frozenset((0, 1)), frozenset((0, 2)), frozenset((1, 2))}
+        self.assertEqual(rd.choose_copies({0: 400, 1: 400, 2: 100}, pairs, {0: 900, 1: 300, 2: 200}), {1: 0, 2: 0})
+
+    def test_candidate_pairs(self):
+        px, nb = {0: 400, 1: 400, 2: 100, 3: 400}, {0: 900, 1: 300, 2: 200, 3: 900}
+        self.assertTrue(rd.candidate(0, 1, px, nb))   # re-save
+        self.assertTrue(rd.candidate(0, 2, px, nb))   # lower resolution
+        self.assertFalse(rd.candidate(0, 3, px, nb))  # same size, same bytes: identical files are handled by sha256
 
 
 if __name__ == "__main__":

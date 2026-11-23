@@ -55,11 +55,11 @@ class Apply(unittest.TestCase):
         self.assertEqual([(p[1], p[3]) for p in plan], [("one", "delete")])
 
     def dedupe_rows(self):
-        rows = [dict(r, lower_res_of="") for r in self.rows]
-        rows[1]["lower_res_of"] = "one"
+        rows = [dict(r, copy_of="") for r in self.rows]
+        rows[1]["copy_of"] = "one"
         return rows
 
-    def test_dedupe_deletes_only_lower_res_copies(self):
+    def test_dedupe_deletes_only_listed_copies(self):
         plan = ar.resolve(ar.Review(c={"1": "dedupe"}), self.dedupe_rows())
         self.assertEqual([(p[1], p[3], p[4]) for p in plan], [("two", "delete", self.p("one"))])
 
@@ -71,7 +71,7 @@ class Apply(unittest.TestCase):
         plan = ar.resolve(ar.Review(c={"1": "dedupe"}), self.dedupe_rows())
         os.remove(self.p("one"))
         out = ar.apply_plan(plan, self.root, self.db, self.dest, self.man, True, self.fake_trash)
-        self.assertEqual(out["skipped: its higher-resolution keeper is gone"], 1)
+        self.assertEqual(out["skipped: its keeper is gone"], 1)
         self.assertTrue(os.path.exists(self.p("two")))
 
     def test_unknown_mark_is_rejected(self):

@@ -11,7 +11,6 @@ dependencies = [
     "numpy>=2.0",
     "pydantic>=2,<3",
     "opencv-python-headless>=4.10",
-    "sqlite-vec>=0.1.6",
 ]
 
 [tool.uv]
