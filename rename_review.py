@@ -18,7 +18,8 @@ import sys
 from multiprocessing import Pool
 
 from PIL import Image, ImageOps
-from pillow_heif import register_heif_opener
+
+from photo_io import register_heif
 
 
 def rid(path):
@@ -30,7 +31,7 @@ def thumb(args):
     name = rid(path) + ".jpg"
     dest = os.path.join(tdir, name)
     if not os.path.exists(dest):
-        register_heif_opener()
+        register_heif()
         img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
         img.thumbnail((400, 400))
         img.save(dest, quality=82)

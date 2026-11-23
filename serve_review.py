@@ -18,7 +18,8 @@ import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image, ImageFile, ImageOps
-from pillow_heif import register_heif_opener
+
+from photo_io import register_heif
 
 Image.MAX_IMAGE_PIXELS = None
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -35,7 +36,7 @@ def photo_bytes(path):
     if os.path.splitext(path)[1].lower() not in CONVERT:
         with open(path, "rb") as f:
             return f.read(), mimetypes.guess_type(path)[0] or "application/octet-stream"
-    register_heif_opener()
+    register_heif()
     buf = io.BytesIO()
     ImageOps.exif_transpose(Image.open(path)).convert("RGB").save(buf, "JPEG", quality=92)
     return buf.getvalue(), "image/jpeg"

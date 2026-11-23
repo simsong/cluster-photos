@@ -12,8 +12,8 @@ import argparse
 import os
 import sqlite3
 
-from cluster_review import build
-from embed_photos import embed
+from cluster_review import add_cluster_args, build
+from embed_photos import add_embed_args, embed, model_id
 
 
 def purge_missing(root, db_path):
@@ -32,11 +32,13 @@ def main():
     ap.add_argument("db", help="SQLite database of embeddings (created if missing)")
     ap.add_argument("--out", default="out/clusters", help="directory for clusters.csv, thumbnails and the page")
     ap.add_argument("--top", type=int, default=500, help="clusters shown on the page, largest first")
+    add_embed_args(ap)
+    settings = add_cluster_args(ap)
     args = ap.parse_args()
     root = os.path.abspath(os.path.expanduser(args.root))
-    embed(root, args.db)
+    embed(root, args.db, args.batch, args.workers, args.limit, args.model, args.pretrained)
     print(f"removed {purge_missing(root, args.db)} rows for missing files", flush=True)
-    run = build(root, args.db, args.out, args.top)
+    run = build(root, args.db, args.out, args.top, settings(args), model_id(args.model, args.pretrained))
     print(f"run {run}: open {os.path.join(os.path.abspath(args.out), 'cluster_review.html')}")
 
 

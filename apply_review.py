@@ -3,7 +3,7 @@
 Theory of purpose: the page only records choices. This program acts on them, safely and reversibly.
 Theory of operation: the pasted JSON is validated against a Pydantic model and resolved with clusters.csv.
 A photo's own mark overrides its cluster's action, "each" or no mark means keep, and "dedupe" deletes only the
-lower-resolution copies listed in clusters.csv, as long as their keeper stays. The JSON's run id must match
+copies listed in clusters.csv (identical, lower-resolution or re-saved), as long as their keeper stays. The JSON's run id must match
 clusters.csv, because cluster numbers mean nothing across runs. Unknown clusters or photos abort before any
 change. The default is a dry run; --execute acts. Each file must be under --root, outside .photoslibrary, and
 match its scanned sha256. Nothing is hard-deleted: deletes use the macOS Trash, moves never overwrite, and every
@@ -50,7 +50,7 @@ def resolve(review, rows):
     def action_for(r):
         a = review.x.get(r["id"]) or review.c.get(r["cluster"], "keep")
         if a == "dedupe":
-            keeper = r.get("lower_res_of")
+            keeper = r.get("copy_of")
             # the keeper must itself be staying, or this copy may be the last one
             return "delete" if keeper and action_for(by_id[keeper]) == "keep" else "keep"
         return a
@@ -59,7 +59,7 @@ def resolve(review, rows):
     for r in rows:
         action = action_for(r)
         if action in ("delete", "move"):
-            keeper = by_id[r["lower_res_of"]]["path"] if r.get("lower_res_of") and review.x.get(r["id"]) is None \
+            keeper = by_id[r["copy_of"]]["path"] if r.get("copy_of") and review.x.get(r["id"]) is None \
                 and review.c.get(r["cluster"]) == "dedupe" else ""
             plan.append((r["cluster"], r["id"], r["path"], action, keeper))
     return plan
@@ -96,7 +96,7 @@ def apply_plan(plan, root, db_path, dest_root, manifest, execute, trash_fn=trash
         elif not os.path.exists(path):
             why = "skipped: already gone"
         elif keeper and not os.path.exists(keeper):
-            why = "skipped: its higher-resolution keeper is gone"
+            why = "skipped: its keeper is gone"
         elif not known or sha256(path) != known[0]:
             why = "skipped: changed since scan"
         else:
